@@ -4,7 +4,6 @@ const {
   DisconnectReason
 } = require("@whiskeysockets/baileys");
 const P = require("pino");
-const qrcode = require("qrcode-terminal");
 
 async function startBot() {
   const { state, saveCreds } =
@@ -17,12 +16,21 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect, qr } = update;
+  if (!state.creds.registered) {
+    const phoneNumber = "2126XXXXXXXX";
 
-    if (qr) {
-      console.log("امسح رمز QR من واتساب:");
-      qrcode.generate(qr, { small: false });
+    const code = await sock.requestPairingCode(phoneNumber);
+
+    console.log("================================");
+    console.log("🔑 Pairing Code:", code);
+    console.log("================================");
+  }
+
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect } = update;
+
+    if (connection === "connecting") {
+      console.log("⏳ جاري الاتصال بواتساب...");
     }
 
     if (connection === "open") {
@@ -43,20 +51,11 @@ async function startBot() {
   });
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
-    for (const message of messages) {
-      if (!message.message || message.key.fromMe) continue;
+    const msg = messages[0];
 
-      const text =
-        message.message.conversation ||
-        message.message.extendedTextMessage?.text ||
-        "";
+    if (!msg || !msg.message) return;
 
-      if (text.toLowerCase() === "مرحبا" || text.toLowerCase() === "hello") {
-        await sock.sendMessage(message.key.remoteJid, {
-          text: "👋 أهلاً بك! البوت يعمل بنجاح."
-        });
-      }
-    }
+    console.log("📩 توصل البوت برسالة");
   });
 }
 
