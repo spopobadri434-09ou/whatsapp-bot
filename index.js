@@ -8,30 +8,29 @@ import pino from "pino";
 import express from "express";
 const PREFIX = ".";
 const PORT = process.env.PORT || 3000;
+// 📱 رقم البوت
+const BOT_NUMBER = "212644140080";
 const BOT_NAME = "SPOPO BOT";
-const BOT_NUMBER = 212644140080
-const SESSION_DIR =
-  process.env.SESSION_DIR || "/app/auth_info_baileys";
+const SESSION_DIR = "/app/auth_info_baileys";
 let sock = null;
 let connected = false;
-let pairingCode = null;
 let reconnecting = false;
 // ===============================
-// EXPRESS / RAILWAY
+// WEB SERVER - RAILWAY
 // ===============================
 const app = express();
 app.get("/", (req, res) => {
   res.send(`
     <html>
       <head>
-        <title>${BOT_NAME}</title>
+        <title>SPOPO BOT</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
       </head>
       <body style="font-family:Arial;text-align:center;padding:40px">
-        <h1>🤖 ${BOT_NAME}</h1>
-        <h2>🔐 Pairing Code System</h2>
-        <p>Status: ${connected ? "🟢 Connected" : "🟡 Waiting"}</p>
-        <p>GFT 🎁</p>
+        <h1>🤖 SPOPO BOT</h1>
+        <h2>🔐 Pairing Code</h2>
+        <p>${connected ? "🟢 Connected" : "🟡 Waiting..."}</p>
+        <h3>🎁 GFT</h3>
       </body>
     </html>
   `);
@@ -39,18 +38,16 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     bot: BOT_NAME,
-    connected,
+    connected: connected,
     pairing: !connected
   });
 });
 app.listen(PORT, () => {
-  console.log(`🌐 Web server running on port ${PORT}`);
+  console.log(`🌐 Railway server running on port ${PORT}`);
 });
 // ===============================
 // HELPERS
 // ===============================
-const sleep = ms =>
-  new Promise(resolve => setTimeout(resolve, ms));
 function getText(message) {
   return (
     message?.conversation ||
@@ -78,29 +75,30 @@ async function getGroup(jid) {
   }
 }
 async function isAdmin(jid, sender) {
-  const metadata = await getGroup(jid);
-  if (!metadata) return false;
-  const participant = metadata.participants.find(
+  const group = await getGroup(jid);
+  if (!group) return false;
+  const user = group.participants.find(
     p =>
       p.id === sender ||
       p.jid === sender ||
       p.lid === sender
   );
-  return !!participant?.admin;
+  return Boolean(user?.admin);
 }
 async function isBotAdmin(jid) {
-  const metadata = await getGroup(jid);
-  if (!metadata || !sock?.user?.id) return false;
-  const botId = sock.user.id.split(":")[0] + "@s.whatsapp.net";
-  const participant = metadata.participants.find(
+  const group = await getGroup(jid);
+  if (!group || !sock?.user?.id) return false;
+  const botNumber = sock.user.id.split(":")[0];
+  const botJid = `${botNumber}@s.whatsapp.net`;
+  const bot = group.participants.find(
     p =>
-      p.id === botId ||
-      p.jid === botId ||
+      p.id === botJid ||
+      p.jid === botJid ||
       p.id === sock.user.id
   );
-  return !!participant?.admin;
+  return Boolean(bot?.admin);
 }
-async function requireGroup(jid) {
+async function groupOnly(jid) {
   if (!isGroup(jid)) {
     await sock.sendMessage(jid, {
       text: "❌ هاد الأمر غير للجروبات."
@@ -109,28 +107,35 @@ async function requireGroup(jid) {
   }
   return true;
 }
-async function requireAdmin(jid, sender) {
-  if (!(await requireGroup(jid))) return false;
+async function adminOnly(jid, sender) {
+  if (!(await groupOnly(jid))) return false;
   if (!(await isAdmin(jid, sender))) {
     await sock.sendMessage(jid, {
-      text: "❌ خاصك تكون Admin باش تستعمل هاد الأمر."
+      text: "❌ خاصك تكون Admin."
     });
     return false;
   }
   if (!(await isBotAdmin(jid))) {
     await sock.sendMessage(jid, {
-      text: "❌ خاصني حتى أنا نكون Admin."
+      text: "❌ خاصني نكون Admin باش ندير هاد الأمر."
     });
     return false;
   }
   return true;
 }
-function mentionNumber(number) {
-  number = number.replace(/[^\d]/g, "");
-  if (!number) return null;
-  return `${number}@s.whatsapp.net`;
+function getMentioned(message) {
+  return (
+    message?.message?.extendedTextMessage
+      ?.contextInfo?.mentionedJid?.[0] || null
+  );
 }
-function formatTime() {
+function numberToJid(number) {
+  const clean = String(number || "")
+    .replace(/[^\d]/g, "");
+  if (!clean) return null;
+  return `${clean}@s.whatsapp.net`;
+}
+function casablancaTime() {
   return new Date().toLocaleString("fr-FR", {
     timeZone: "Africa/Casablanca"
   });
@@ -138,7 +143,7 @@ function formatTime() {
 // ===============================
 // MENU
 // ===============================
-function menu() {
+function getMenu() {
   return `
 ╭━━━〔 🤖 SPOPO BOT 〕━━━╮
 ┃
@@ -156,8 +161,8 @@ function menu() {
 ┃ ${PREFIX}owner
 ┃ ${PREFIX}time
 ┃ ${PREFIX}date
-┃ ${PREFIX}bot
 ┃ ${PREFIX}about
+┃ ${PREFIX}bot
 ┃
 ┣━━〔 GROUP 〕━━
 ┃
@@ -173,30 +178,25 @@ function menu() {
 ┃ ${PREFIX}desc
 ┃ ${PREFIX}link
 ┃ ${PREFIX}revoke
-┃
-┣━━〔 SETTINGS 〕━━
-┃
-┃ ${PREFIX}welcome
 ┃ ${PREFIX}rules
+┃ ${PREFIX}welcome
+┃
+┣━━〔 TOOLS 〕━━
+┃
 ┃ ${PREFIX}id
 ┃ ${PREFIX}jid
+┃ ${PREFIX}calc
+┃ ${PREFIX}say
 ┃
 ╰━━━━━━━━━━━━━━━━━━━━╯
 🎁 GFT — SPOPO BOT
 `;
 }
 // ===============================
-// CONNECTION
+// CONNECT WHATSAPP
 // ===============================
 async function connectWhatsApp() {
   try {
-    if (!BOT_NUMBER) {
-      console.log("");
-      console.log("❌ BOT_NUMBER ما متحطاش.");
-      console.log("Railway → Variables → BOT_NUMBER");
-      console.log("");
-      return;
-    }
     const { state, saveCreds } =
       await useMultiFileAuthState(SESSION_DIR);
     sock = makeWASocket({
@@ -204,9 +204,8 @@ async function connectWhatsApp() {
       logger: pino({
         level: "silent"
       }),
-      browser: Browsers.ubuntu(BOT_NAME),
+      browser: Browsers.ubuntu("SPOPO BOT"),
       printQRInTerminal: false,
-      generateHighQualityLinkPreview: false,
       markOnlineOnConnect: false
     });
     sock.ev.on("creds.update", saveCreds);
@@ -215,31 +214,33 @@ async function connectWhatsApp() {
     // ===============================
     if (!state.creds.registered) {
       console.log("");
-      console.log("🔐 Preparing Pairing Code...");
+      console.log("🔐 SPOPO BOT");
+      console.log("📱 Preparing Pairing Code...");
       console.log("");
-      await sleep(3000);
       try {
-        const cleanNumber =
-          BOT_NUMBER.replace(/[^\d]/g, "");
-        pairingCode =
-          await sock.requestPairingCode(cleanNumber);
+        const code = await sock.requestPairingCode(
+          BOT_NUMBER
+        );
         console.log("");
-        console.log("╔════════════════════════════╗");
-        console.log("║     🔐 SPOPO PAIRING       ║");
-        console.log("╠════════════════════════════╣");
-        console.log(`║ CODE: ${pairingCode}`);
-        console.log("╚════════════════════════════╝");
+        console.log("╔══════════════════════════════╗");
+        console.log("║      🔐 PAIRING CODE         ║");
+        console.log("╠══════════════════════════════╣");
+        console.log(`║      ${code}              ║`);
+        console.log("╚══════════════════════════════╝");
         console.log("");
         console.log(
-          "📱 WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number"
+          "WhatsApp → Linked Devices → Link with phone number"
         );
         console.log("");
       } catch (error) {
-        console.log("❌ Pairing Code Error:", error.message);
+        console.log(
+          "❌ Pairing Code Error:",
+          error?.message || error
+        );
       }
     }
     // ===============================
-    // CONNECTION UPDATE
+    // CONNECTION
     // ===============================
     sock.ev.on("connection.update", async update => {
       const {
@@ -249,69 +250,65 @@ async function connectWhatsApp() {
       if (connection === "open") {
         connected = true;
         reconnecting = false;
-        pairingCode = null;
         console.log("");
-        console.log("╔════════════════════════════╗");
-        console.log("║   🟢 SPOPO BOT ONLINE      ║");
-        console.log("║   🎁 GFT                   ║");
-        console.log("╚════════════════════════════╝");
+        console.log("╔══════════════════════════════╗");
+        console.log("║    🟢 SPOPO BOT ONLINE       ║");
+        console.log("║    🎁 GFT                    ║");
+        console.log("╚══════════════════════════════╝");
         console.log("");
       }
       if (connection === "close") {
         connected = false;
         const statusCode =
-          new Boom(lastDisconnect?.error)?.output
-            ?.statusCode;
+          new Boom(lastDisconnect?.error)
+            ?.output?.statusCode;
         const shouldReconnect =
           statusCode !== DisconnectReason.loggedOut;
         console.log(
-          "🔴 Connection closed:",
+          "🔴 WhatsApp disconnected:",
           statusCode
         );
         if (shouldReconnect && !reconnecting) {
           reconnecting = true;
-          console.log("🔄 Reconnecting...");
+          console.log("🔄 Reconnecting in 5 seconds...");
           setTimeout(() => {
+            reconnecting = false;
             connectWhatsApp();
           }, 5000);
-        } else {
-          console.log(
-            "❌ Session logged out. Delete auth folder and pair again."
-          );
         }
       }
     });
     // ===============================
-    // AUTO WELCOME + GFT
+    // WELCOME + GFT
     // ===============================
     sock.ev.on(
       "group-participants.update",
       async update => {
         try {
           if (update.action !== "add") return;
-          const metadata =
+          const group =
             await sock.groupMetadata(update.id);
           for (const participant of update.participants) {
             const number =
               participant.split("@")[0];
-            const welcomeText = `
-╭━━━〔 🎉 WELCOME 〕━━━╮
-👋 مرحبا @${number}
-🤖 مرحبا بك مع ${BOT_NAME}
-🎁 GFT 🎁
-📌 كتب ${PREFIX}menu باش تشوف الأوامر.
-📜 ${metadata.subject}
-╰━━━━━━━━━━━━━━━━━━━━╯
-`;
             await sock.sendMessage(update.id, {
-              text: welcomeText,
+              text:
+`╭━━━〔 🎉 WELCOME 〕━━━╮
+👋 مرحبا @${number}
+🤖 مرحبا بك فـ ${BOT_NAME}
+🎁 GFT 🎁
+📌 كتب ${PREFIX}menu
+باش تشوف الأوامر.
+👥 Group:
+${group.subject}
+╰━━━━━━━━━━━━━━━━━━━━╯`,
               mentions: [participant]
             });
           }
         } catch (error) {
           console.log(
             "Welcome Error:",
-            error.message
+            error?.message || error
           );
         }
       }
@@ -319,402 +316,496 @@ async function connectWhatsApp() {
     // ===============================
     // MESSAGES
     // ===============================
-    sock.ev.on("messages.upsert", async ({ messages }) => {
-      try {
-        const message = messages?.[0];
-        if (!message?.message) return;
-        if (message.key?.fromMe) return;
-        const jid = message.key.remoteJid;
-        const sender = getSender(message);
-        if (!jid) return;
-        const text = getText(message).trim();
-        if (!text.startsWith(PREFIX)) return;
-        const body = text.slice(PREFIX.length).trim();
-        if (!body) return;
-        const args = body.split(/\s+/);
-        const command = args.shift().toLowerCase();
-        const argText = args.join(" ");
-        // ===============================
-        // GENERAL
-        // ===============================
-        if (command === "menu" || command === "help") {
-          return await sock.sendMessage(jid, {
-            text: menu()
-          });
-        }
-        if (command === "ping") {
-          return await sock.sendMessage(jid, {
-            text: "🏓 Pong!\n⚡ SPOPO BOT is working."
-          });
-        }
-        if (command === "alive") {
-          return await sock.sendMessage(jid, {
-            text:
-              `🟢 ${BOT_NAME} Online\n\n` +
-              `🎁 GFT\n` +
-              `⏰ ${formatTime()}`
-          });
-        }
-        if (command === "bot") {
-          return await sock.sendMessage(jid, {
-            text:
-              `🤖 ${BOT_NAME}\n\n` +
-              `🎁 GFT BOT\n` +
-              `⚡ Prefix: ${PREFIX}\n` +
-              `🟢 Status: Online`
-          });
-        }
-        if (command === "about" || command === "info") {
-          return await sock.sendMessage(jid, {
-            text:
-              `🤖 ${BOT_NAME}\n\n` +
-              `🎁 GFT\n` +
-              `⚡ WhatsApp Bot\n` +
-              `🚀 Railway Ready\n` +
-              `🔐 Pairing Code`
-          });
-        }
-        if (command === "owner") {
-          return await sock.sendMessage(jid, {
-            text:
-              "👑 Owner\n\n" +
-              "🤖 SPOPO BOT\n" +
-              "🎁 GFT"
-          });
-        }
-        if (command === "time") {
-          return await sock.sendMessage(jid, {
-            text: `⏰ ${formatTime()}`
-          });
-        }
-        if (command === "date") {
-          return await sock.sendMessage(jid, {
-            text: `📅 ${new Date().toLocaleDateString("fr-FR", {
-              timeZone: "Africa/Casablanca"
-            })}`
-          });
-        }
-        // ===============================
-        // ID
-        // ===============================
-        if (command === "id" || command === "jid") {
-          return await sock.sendMessage(jid, {
-            text: `🆔 JID:\n${jid}`
-          });
-        }
-        // ===============================
-        // GROUP INFO
-        // ===============================
-        if (command === "groupinfo") {
-          if (!(await requireGroup(jid))) return;
-          const metadata =
-            await getGroup(jid);
-          const admins =
-            metadata.participants.filter(
-              p => p.admin
-            ).length;
-          return await sock.sendMessage(jid, {
-            text:
-              `╭━━〔 GROUP INFO 〕━━╮\n\n` +
-              `📌 Name: ${metadata.subject}\n` +
-              `👥 Members: ${metadata.participants.length}\n` +
-              `👮 Admins: ${admins}\n` +
-              `🆔 ${metadata.id}\n\n` +
-              `🎁 GFT\n` +
-              `╰━━━━━━━━━━━━━━╯`
-          });
-        }
-        // ===============================
-        // ADMINS
-        // ===============================
-        if (command === "admins") {
-          if (!(await requireGroup(jid))) return;
-          const metadata =
-            await getGroup(jid);
-          const admins =
-            metadata.participants.filter(
-              p => p.admin
-            );
-          const mentions =
-            admins.map(a => a.id);
-          let msg = "👮 *GROUP ADMINS*\n\n";
-          admins.forEach((admin, index) => {
-            msg += `${index + 1}. @${admin.id.split("@")[0]}\n`;
-          });
-          return await sock.sendMessage(jid, {
-            text: msg,
-            mentions
-          });
-        }
-        // ===============================
-        // TAG ALL
-        // ===============================
-        if (command === "tagall") {
-          if (!(await requireAdmin(jid, sender))) return;
-          const metadata =
-            await getGroup(jid);
-          const mentions =
-            metadata.participants.map(
-              p => p.id
-            );
-          let msg =
-            `📢 *TAG ALL*\n\n`;
-          metadata.participants.forEach(p => {
-            msg += `@${p.id.split("@")[0]} `;
-          });
-          return await sock.sendMessage(jid, {
-            text: msg,
-            mentions
-          });
-        }
-        // ===============================
-        // HIDETAG
-        // ===============================
-        if (command === "hidetag") {
-          if (!(await requireAdmin(jid, sender))) return;
-          const metadata =
-            await getGroup(jid);
-          const mentions =
-            metadata.participants.map(
-              p => p.id
-            );
-          return await sock.sendMessage(jid, {
-            text:
-              argText ||
-              "📢 Message from Admin\n🎁 GFT",
-            mentions
-          });
-        }
-        // ===============================
-        // KICK
-        // ===============================
-        if (command === "kick") {
-          if (!(await requireAdmin(jid, sender))) return;
-          let target = null;
+    sock.ev.on(
+      "messages.upsert",
+      async ({ messages }) => {
+        try {
+          const message = messages?.[0];
+          if (!message?.message) return;
+          if (message.key?.fromMe) return;
+          const jid = message.key?.remoteJid;
+          const sender = getSender(message);
+          if (!jid) return;
+          const text =
+            getText(message).trim();
+          if (!text.startsWith(PREFIX)) return;
+          const commandText =
+            text.slice(PREFIX.length).trim();
+          const parts =
+            commandText.split(/\s+/);
+          const command =
+            parts.shift()?.toLowerCase();
+          const args = parts;
+          const argText =
+            args.join(" ");
+          // =========================
+          // MENU
+          // =========================
           if (
-            message.message?.extendedTextMessage
-              ?.contextInfo?.mentionedJid?.length
+            command === "menu" ||
+            command === "help"
           ) {
-            target =
-              message.message.extendedTextMessage
-                .contextInfo.mentionedJid[0];
-          }
-          if (!target && args[0]) {
-            target = mentionNumber(args[0]);
-          }
-          if (!target) {
             return await sock.sendMessage(jid, {
-              text:
-                `❌ استعمل:\n${PREFIX}kick @user`
+              text: getMenu()
             });
           }
-          await sock.groupParticipantsUpdate(
-            jid,
-            [target],
-            "remove"
-          );
-          return await sock.sendMessage(jid, {
-            text:
-              `✅ تم إخراج @${target.split("@")[0]}`,
-            mentions: [target]
-          });
-        }
-        // ===============================
-        // ADD
-        // ===============================
-        if (command === "add") {
-          if (!(await requireAdmin(jid, sender))) return;
-          if (!args[0]) {
+          // =========================
+          // PING
+          // =========================
+          if (command === "ping") {
             return await sock.sendMessage(jid, {
               text:
-                `❌ استعمل:\n${PREFIX}add 212XXXXXXXXX`
+                "🏓 PONG!\n\n" +
+                "🟢 SPOPO BOT Working\n" +
+                "🎁 GFT"
             });
           }
-          const target =
-            mentionNumber(args[0]);
-          if (!target) return;
-          await sock.groupParticipantsUpdate(
-            jid,
-            [target],
-            "add"
-          );
-          return await sock.sendMessage(jid, {
-            text:
-              `✅ تمت محاولة إضافة @${target.split("@")[0]}`,
-            mentions: [target]
-          });
-        }
-        // ===============================
-        // PROMOTE
-        // ===============================
-        if (command === "promote") {
-          if (!(await requireAdmin(jid, sender))) return;
-          let target =
-            message.message?.extendedTextMessage
-              ?.contextInfo?.mentionedJid?.[0];
-          if (!target && args[0]) {
-            target = mentionNumber(args[0]);
-          }
-          if (!target) {
+          // =========================
+          // ALIVE
+          // =========================
+          if (command === "alive") {
             return await sock.sendMessage(jid, {
               text:
-                `❌ استعمل:\n${PREFIX}promote @user`
+                `🟢 ${BOT_NAME} ONLINE\n\n` +
+                `🎁 GFT\n` +
+                `⏰ ${casablancaTime()}`
             });
           }
-          await sock.groupParticipantsUpdate(
-            jid,
-            [target],
-            "promote"
-          );
-          return await sock.sendMessage(jid, {
-            text:
-              `👑 تم إعطاء Admin لـ @${target.split("@")[0]}`,
-            mentions: [target]
-          });
-        }
-        // ===============================
-        // DEMOTE
-        // ===============================
-        if (command === "demote") {
-          if (!(await requireAdmin(jid, sender))) return;
-          let target =
-            message.message?.extendedTextMessage
-              ?.contextInfo?.mentionedJid?.[0];
-          if (!target && args[0]) {
-            target = mentionNumber(args[0]);
-          }
-          if (!target) {
+          // =========================
+          // BOT
+          // =========================
+          if (command === "bot") {
             return await sock.sendMessage(jid, {
               text:
-                `❌ استعمل:\n${PREFIX}demote @user`
+                "🤖 SPOPO BOT\n\n" +
+                "🟢 Online\n" +
+                "🔐 Pairing Code\n" +
+                "🎁 GFT\n" +
+                "🚀 Railway"
             });
           }
-          await sock.groupParticipantsUpdate(
-            jid,
-            [target],
-            "demote"
-          );
-          return await sock.sendMessage(jid, {
-            text:
-              `✅ تم نزع Admin من @${target.split("@")[0]}`,
-            mentions: [target]
-          });
-        }
-        // ===============================
-        // SUBJECT
-        // ===============================
-        if (command === "subject") {
-          if (!(await requireAdmin(jid, sender))) return;
-          if (!argText) {
+          // =========================
+          // ABOUT / INFO
+          // =========================
+          if (
+            command === "about" ||
+            command === "info"
+          ) {
             return await sock.sendMessage(jid, {
               text:
-                `❌ استعمل:\n${PREFIX}subject اسم الجروب`
+                `🤖 ${BOT_NAME}\n\n` +
+                `🎁 GFT BOT\n` +
+                `⚡ Prefix: ${PREFIX}\n` +
+                `🔐 Pairing Code\n` +
+                `🚀 Railway Ready`
             });
           }
-          await sock.groupUpdateSubject(
-            jid,
-            argText
-          );
-          return await sock.sendMessage(jid, {
-            text:
-              `✅ تبدل اسم الجروب.\n\n🎁 GFT`
-          });
-        }
-        // ===============================
-        // DESCRIPTION
-        // ===============================
-        if (command === "desc") {
-          if (!(await requireAdmin(jid, sender))) return;
-          if (!argText) {
+          // =========================
+          // OWNER
+          // =========================
+          if (command === "owner") {
             return await sock.sendMessage(jid, {
               text:
-                `❌ استعمل:\n${PREFIX}desc الوصف الجديد`
+                "👑 BOT OWNER\n\n" +
+                "🤖 SPOPO BOT\n" +
+                "🎁 GFT"
             });
           }
-          await sock.groupUpdateDescription(
-            jid,
-            argText
+          // =========================
+          // TIME
+          // =========================
+          if (command === "time") {
+            return await sock.sendMessage(jid, {
+              text:
+                `⏰ ${casablancaTime()}`
+            });
+          }
+          // =========================
+          // DATE
+          // =========================
+          if (command === "date") {
+            const date =
+              new Date().toLocaleDateString(
+                "fr-FR",
+                {
+                  timeZone:
+                    "Africa/Casablanca"
+                }
+              );
+            return await sock.sendMessage(jid, {
+              text: `📅 ${date}`
+            });
+          }
+          // =========================
+          // ID / JID
+          // =========================
+          if (
+            command === "id" ||
+            command === "jid"
+          ) {
+            return await sock.sendMessage(jid, {
+              text:
+                `🆔 JID:\n${jid}`
+            });
+          }
+          // =========================
+          // CALCULATOR
+          // =========================
+          if (command === "calc") {
+            if (!argText) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ مثال:\n${PREFIX}calc 10+5*2`
+              });
+            }
+            if (!/^[0-9+\-*/(). %]+$/.test(argText)) {
+              return await sock.sendMessage(jid, {
+                text:
+                  "❌ عملية غير صالحة."
+              });
+            }
+            try {
+              const result =
+                Function(
+                  `"use strict"; return (${argText})`
+                )();
+              return await sock.sendMessage(jid, {
+                text:
+                  `🧮 ${argText} = ${result}`
+              });
+            } catch {
+              return await sock.sendMessage(jid, {
+                text:
+                  "❌ خطأ فالحساب."
+              });
+            }
+          }
+          // =========================
+          // SAY
+          // =========================
+          if (command === "say") {
+            if (!argText) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ مثال:\n${PREFIX}say Hello`
+              });
+            }
+            return await sock.sendMessage(jid, {
+              text: argText
+            });
+          }
+          // =========================
+          // GROUP INFO
+          // =========================
+          if (command === "groupinfo") {
+            if (!(await groupOnly(jid))) return;
+            const group =
+              await getGroup(jid);
+            const admins =
+              group.participants.filter(
+                p => p.admin
+              );
+            return await sock.sendMessage(jid, {
+              text:
+`╭━━〔 GROUP INFO 〕━━╮
+📌 Name: ${group.subject}
+👥 Members: ${group.participants.length}
+👮 Admins: ${admins.length}
+🆔 ${group.id}
+🎁 GFT
+╰━━━━━━━━━━━━━━━━╯`
+            });
+          }
+          // =========================
+          // ADMINS
+          // =========================
+          if (command === "admins") {
+            if (!(await groupOnly(jid))) return;
+            const group =
+              await getGroup(jid);
+            const admins =
+              group.participants.filter(
+                p => p.admin
+              );
+            const mentions =
+              admins.map(p => p.id);
+            let text =
+              "👮 *GROUP ADMINS*\n\n";
+            for (const admin of admins) {
+              text +=
+                `@${admin.id.split("@")[0]}\n`;
+            }
+            return await sock.sendMessage(jid, {
+              text,
+              mentions
+            });
+          }
+          // =========================
+          // TAG ALL
+          // =========================
+          if (command === "tagall") {
+            if (!(await adminOnly(jid, sender))) return;
+            const group =
+              await getGroup(jid);
+            const mentions =
+              group.participants.map(
+                p => p.id
+              );
+            let text =
+              "📢 *TAG ALL*\n\n";
+            for (const p of group.participants) {
+              text +=
+                `@${p.id.split("@")[0]} `;
+            }
+            return await sock.sendMessage(jid, {
+              text,
+              mentions
+            });
+          }
+          // =========================
+          // HIDETAG
+          // =========================
+          if (command === "hidetag") {
+            if (!(await adminOnly(jid, sender))) return;
+            const group =
+              await getGroup(jid);
+            const mentions =
+              group.participants.map(
+                p => p.id
+              );
+            return await sock.sendMessage(jid, {
+              text:
+                argText ||
+                "📢 Message from Admin\n🎁 GFT",
+              mentions
+            });
+          }
+          // =========================
+          // KICK
+          // =========================
+          if (command === "kick") {
+            if (!(await adminOnly(jid, sender))) return;
+            let target =
+              getMentioned(message);
+            if (!target && args[0]) {
+              target =
+                numberToJid(args[0]);
+            }
+            if (!target) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ ${PREFIX}kick @user`
+              });
+            }
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "remove"
+            );
+            return await sock.sendMessage(jid, {
+              text:
+                `✅ تم إخراج @${target.split("@")[0]}`,
+              mentions: [target]
+            });
+          }
+          // =========================
+          // ADD
+          // =========================
+          if (command === "add") {
+            if (!(await adminOnly(jid, sender))) return;
+            if (!args[0]) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ ${PREFIX}add 212XXXXXXXXX`
+              });
+            }
+            const target =
+              numberToJid(args[0]);
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "add"
+            );
+            return await sock.sendMessage(jid, {
+              text:
+                `✅ تمت محاولة إضافة @${target.split("@")[0]}`,
+              mentions: [target]
+            });
+          }
+          // =========================
+          // PROMOTE
+          // =========================
+          if (command === "promote") {
+            if (!(await adminOnly(jid, sender))) return;
+            let target =
+              getMentioned(message);
+            if (!target && args[0]) {
+              target =
+                numberToJid(args[0]);
+            }
+            if (!target) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ ${PREFIX}promote @user`
+              });
+            }
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "promote"
+            );
+            return await sock.sendMessage(jid, {
+              text:
+                `👑 @${target.split("@")[0]} ولى Admin`,
+              mentions: [target]
+            });
+          }
+          // =========================
+          // DEMOTE
+          // =========================
+          if (command === "demote") {
+            if (!(await adminOnly(jid, sender))) return;
+            let target =
+              getMentioned(message);
+            if (!target && args[0]) {
+              target =
+                numberToJid(args[0]);
+            }
+            if (!target) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ ${PREFIX}demote @user`
+              });
+            }
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "demote"
+            );
+            return await sock.sendMessage(jid, {
+              text:
+                `✅ تحيد Admin من @${target.split("@")[0]}`,
+              mentions: [target]
+            });
+          }
+          // =========================
+          // SUBJECT
+          // =========================
+          if (command === "subject") {
+            if (!(await adminOnly(jid, sender))) return;
+            if (!argText) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ ${PREFIX}subject الاسم الجديد`
+              });
+            }
+            await sock.groupUpdateSubject(
+              jid,
+              argText
+            );
+            return await sock.sendMessage(jid, {
+              text:
+                "✅ تبدل اسم الجروب.\n🎁 GFT"
+            });
+          }
+          // =========================
+          // DESCRIPTION
+          // =========================
+          if (command === "desc") {
+            if (!(await adminOnly(jid, sender))) return;
+            if (!argText) {
+              return await sock.sendMessage(jid, {
+                text:
+                  `❌ ${PREFIX}desc الوصف الجديد`
+              });
+            }
+            await sock.groupUpdateDescription(
+              jid,
+              argText
+            );
+            return await sock.sendMessage(jid, {
+              text:
+                "✅ تبدل وصف الجروب.\n🎁 GFT"
+            });
+          }
+          // =========================
+          // GROUP LINK
+          // =========================
+          if (command === "link") {
+            if (!(await adminOnly(jid, sender))) return;
+            const code =
+              await sock.groupInviteCode(jid);
+            return await sock.sendMessage(jid, {
+              text:
+                `🔗 Group Link:\n\n` +
+                `https://chat.whatsapp.com/${code}`
+            });
+          }
+          // =========================
+          // REVOKE
+          // =========================
+          if (command === "revoke") {
+            if (!(await adminOnly(jid, sender))) return;
+            await sock.groupRevokeInvite(jid);
+            return await sock.sendMessage(jid, {
+              text:
+                "✅ تبدل رابط الجروب."
+            });
+          }
+          // =========================
+          // RULES
+          // =========================
+          if (command === "rules") {
+            return await sock.sendMessage(jid, {
+              text:
+`📜 *GROUP RULES*
+1️⃣ الاحترام
+2️⃣ ممنوع السبام
+3️⃣ ممنوع المشاكل
+4️⃣ احترام Admins
+🎁 GFT`
+            });
+          }
+          // =========================
+          // WELCOME
+          // =========================
+          if (command === "welcome") {
+            if (!(await groupOnly(jid))) return;
+            return await sock.sendMessage(jid, {
+              text:
+`👋 *WELCOME SYSTEM*
+🟢 Status: ON
+🎁 GFT
+أي عضو جديد يدخل للجروب
+غادي توصله رسالة ترحيب.`
+            });
+          }
+          // =========================
+          // UNKNOWN
+          // =========================
+          return await sock.sendMessage(jid, {
+            text:
+              `❌ الأمر غير موجود.\n\n` +
+              `كتب ${PREFIX}menu`
+          });
+        } catch (error) {
+          console.log(
+            "❌ Message Error:",
+            error?.message || error
           );
-          return await sock.sendMessage(jid, {
-            text:
-              `✅ تبدل وصف الجروب.\n\n🎁 GFT`
-          });
         }
-        // ===============================
-        // GROUP LINK
-        // ===============================
-        if (command === "link") {
-          if (!(await requireAdmin(jid, sender))) return;
-          const code =
-            await sock.groupInviteCode(jid);
-          return await sock.sendMessage(jid, {
-            text:
-              `🔗 Group Link:\n\n` +
-              `https://chat.whatsapp.com/${code}`
-          });
-        }
-        // ===============================
-        // REVOKE LINK
-        // ===============================
-        if (command === "revoke") {
-          if (!(await requireAdmin(jid, sender))) return;
-          await sock.groupRevokeInvite(jid);
-          return await sock.sendMessage(jid, {
-            text:
-              "✅ تم تغيير رابط الجروب."
-          });
-        }
-        // ===============================
-        // RULES
-        // ===============================
-        if (command === "rules") {
-          return await sock.sendMessage(jid, {
-            text:
-              `📜 *GROUP RULES*\n\n` +
-              `1️⃣ الاحترام\n` +
-              `2️⃣ ممنوع السبام\n` +
-              `3️⃣ ممنوع المشاكل\n` +
-              `4️⃣ احترم Admins\n\n` +
-              `🎁 GFT`
-          });
-        }
-        // ===============================
-        // WELCOME
-        // ===============================
-        if (command === "welcome") {
-          if (!(await requireAdmin(jid, sender))) return;
-          return await sock.sendMessage(jid, {
-            text:
-              `👋 Welcome System\n\n` +
-              `🟢 ON\n` +
-              `🎁 GFT\n\n` +
-              `أي عضو جديد غادي يوصله الترحيب.`
-          });
-        }
-        // ===============================
-        // UNKNOWN COMMAND
-        // ===============================
-        return await sock.sendMessage(jid, {
-          text:
-            `❌ الأمر غير موجود.\n\n` +
-            `كتب ${PREFIX}menu باش تشوف الأوامر.`
-        });
-      } catch (error) {
-        console.log(
-          "Message Error:",
-          error?.message || error
-        );
       }
-    });
+    );
   } catch (error) {
     connected = false;
     console.log(
-      "❌ Connection Error:",
+      "❌ Main Error:",
       error?.message || error
     );
     if (!reconnecting) {
       reconnecting = true;
       setTimeout(() => {
+        reconnecting = false;
         connectWhatsApp();
       }, 5000);
     }
@@ -725,9 +816,9 @@ async function connectWhatsApp() {
 // ===============================
 console.log("");
 console.log("╔══════════════════════════════╗");
-console.log("║       🤖 SPOPO BOT           ║");
-console.log("║       🎁 GFT BOT             ║");
-console.log("║       🔐 PAIRING CODE        ║");
+console.log("║        🤖 SPOPO BOT          ║");
+console.log("║        🎁 GFT BOT            ║");
+console.log("║        🔐 PAIRING CODE       ║");
 console.log("╚══════════════════════════════╝");
 console.log("");
 connectWhatsApp();
