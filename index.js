@@ -1,1071 +1,768 @@
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
+import makeWASocket, {
   DisconnectReason,
-  Browsers,
-  downloadContentFromMessage
-} = require("@whiskeysockets/baileys");
-
-const P = require("pino");
-const fs = require("fs");
-const path = require("path");
-const sharp = require("sharp");
-
+  useMultiFileAuthState,
+  delay
+} from "@whiskeysockets/baileys";
+import P from "pino";
+const PREFIX = ".";
+const BOT_NUMBER = "212644140800"; // 0644140800
+const SESSION = "./session";
+const logger = P({ level: "silent" });
 // ===============================
-// 🤖 SPOPO BOT
+// 🛡️ SETTINGS
 // ===============================
-
-const PHONE_NUMBER = "212644140800";
-
-const AUTH_DIR = "./auth_info_baileys";
-
-let pairingRequested = false;
-
-const settings = new Map();
-const spamData = new Map();
-const joinTimes = new Map();
-
+const settings = {
+  antiLink: true,
+  antiSpam: true,
+  antiBadWord: true,
+  maxSpamMessages: 6,
+  spamTime: 8000,
+  maxWarnings: 3,
+  badWords: [
+    "كلمة1",
+    "كلمة2",
+    "كلمة3"
+  ]
+};
 // ===============================
-// 🛠️ أدوات مساعدة
+// 💾 DATA
 // ===============================
-
+const warnings = new Map();
+const spam = new Map();
+// ===============================
+// 🎌 MENU
+// ===============================
+const MENU = `
+╭━━━〔 🎌 SPOPO BOT V2 〕━━━╮
+┃
+┃ 🎌 ANIME SYSTEM
+┃ ├ .menu
+┃ ├ .anime
+┃ ├ .waifu
+┃ └ .quote
+┃
+┃ 🛡️ GROUP PROTECTION
+┃ ├ .antilink on/off
+┃ ├ .antispam on/off
+┃ ├ .badword on/off
+┃ └ .warn @user
+┃
+┃ 👑 ADMIN
+┃ ├ .kick @user
+┃ ├ .ban @user
+┃ ├ .promote @user
+┃ └ .demote @user
+┃
+┃ 🪙 XP / POINTS
+┃ ├ .rank
+┃ ├ .level
+┃ ├ .points
+┃ ├ .daily
+┃ ├ .top
+┃ └ .shop
+┃
+┃ 🎵 MEDIA
+┃ ├ .song
+┃ ├ .image
+┃ └ .sticker
+┃
+┃ 📸 INSTAGRAM
+┃ ├ .ig
+┃ ├ .iguser
+┃ └ .igstats
+┃
+┃ 😂 FUN
+┃ ├ .joke
+┃ ├ .love
+┃ ├ .ship
+┃ └ .rate
+┃
+┃ 🤖 BOT
+┃ ├ .ping
+┃ ├ .alive
+┃ ├ .info
+┃ └ .owner
+┃
+╰━━━━━━━━━━━━━━━━━━━━━━╯
+        ⚡ SPOPO BOT ⚡
+`;
+// ===============================
+// 🔧 FUNCTIONS
+// ===============================
 function getText(message) {
-  if (!message) return "";
-
   return (
-    message.conversation ||
-    message.extendedTextMessage?.text ||
-    message.imageMessage?.caption ||
-    message.videoMessage?.caption ||
-    message.documentMessage?.caption ||
+    message.message?.conversation ||
+    message.message?.extendedTextMessage?.text ||
+    message.message?.imageMessage?.caption ||
+    message.message?.videoMessage?.caption ||
     ""
-  ).trim();
-}
-
-function jidNumber(jid) {
-  if (!jid) return "";
-  return jid.split("@")[0].split(":")[0];
-}
-
-function sameUser(a, b) {
-  return jidNumber(a) === jidNumber(b);
-}
-
-function mentionText(participants) {
-  return participants
-    .map((p) => `@${jidNumber(p.id)}`)
-    .join(" ");
-}
-
-function isLink(text) {
-  return /(https?:\/\/|www\.|chat\.whatsapp\.com\/|t\.me\/|discord\.gg\/)/i.test(
-    text
   );
 }
-
-async function isGroupAdmin(sock, jid, user) {
+function getMention(message) {
+  return (
+    message.message?.extendedTextMessage
+      ?.contextInfo?.mentionedJid?.[0] || null
+  );
+}
+function hasLink(text) {
+  return /(https?:\/\/|www\.|chat\.whatsapp\.com\/|t\.me\/|instagram\.com\/|facebook\.com\/|youtube\.com\/)/i
+    .test(text);
+}
+function hasBadWord(text) {
+  const lower = text.toLowerCase();
+  return settings.badWords.some(word =>
+    lower.includes(word.toLowerCase())
+  );
+}
+// ===============================
+// 👑 ADMIN CHECK
+// ===============================
+async function isAdmin(sock, group, user) {
   try {
-    const metadata = await sock.groupMetadata(jid);
-
-    const participant = metadata.participants.find((p) =>
-      sameUser(p.id, user)
+    const metadata = await sock.groupMetadata(group);
+    const participant =
+      metadata.participants.find(p => p.id === user);
+    return (
+      participant &&
+      (
+        participant.admin === "admin" ||
+        participant.admin === "superadmin"
+      )
     );
-
-    return !!participant?.admin;
   } catch {
     return false;
   }
 }
-
-async function botIsAdmin(sock, jid) {
+async function isBotAdmin(sock, group) {
   try {
-    const metadata = await sock.groupMetadata(jid);
-
-    if (!sock.user?.id) return false;
-
-    const me = metadata.participants.find((p) =>
-      sameUser(p.id, sock.user.id)
-    );
-
-    return !!me?.admin;
+    const bot =
+      sock.user?.id?.split(":")[0] +
+      "@s.whatsapp.net";
+    return await isAdmin(sock, group, bot);
   } catch {
     return false;
   }
 }
-
-async function getTarget(msg, text) {
-  if (msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.length) {
-    return msg.message.extendedTextMessage.contextInfo.mentionedJid[0];
+// ===============================
+// ⚠️ WARNING SYSTEM
+// ===============================
+async function warning(sock, group, user, reason) {
+  const key = `${group}:${user}`;
+  const current =
+    (warnings.get(key) || 0) + 1;
+  warnings.set(key, current);
+  if (
+    current >= settings.maxWarnings &&
+    await isBotAdmin(sock, group)
+  ) {
+    try {
+      await sock.groupParticipantsUpdate(
+        group,
+        [user],
+        "remove"
+      );
+      warnings.delete(key);
+      await sock.sendMessage(group, {
+        text:
+          `🚫 @${user.split("@")[0]} تم طردك.\n\n` +
+          `📛 السبب: ${reason}\n` +
+          `⚠️ وصلت ${settings.maxWarnings}/${settings.maxWarnings} مخالفات.`,
+        mentions: [user]
+      });
+      return;
+    } catch (error) {
+      console.log("Kick error:", error.message);
+    }
   }
-
-  const number = text.match(/@(\d{5,16})/);
-
-  if (number) {
-    return `${number[1]}@s.whatsapp.net`;
-  }
-
-  return null;
-}
-
-async function send(sock, jid, text, mentions = []) {
-  return sock.sendMessage(jid, {
-    text,
-    mentions
+  await sock.sendMessage(group, {
+    text:
+      `⚠️ تحذير لـ @${user.split("@")[0]}\n\n` +
+      `📛 السبب: ${reason}\n` +
+      `⚠️ المخالفات: ${current}/${settings.maxWarnings}`,
+    mentions: [user]
   });
 }
-
 // ===============================
-// 🚀 تشغيل البوت
+// 🚀 START BOT
 // ===============================
-
 async function startBot() {
-  if (!fs.existsSync(AUTH_DIR)) {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
-  }
-
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-
+  const {
+    state,
+    saveCreds
+  } = await useMultiFileAuthState(SESSION);
   const sock = makeWASocket({
     auth: state,
-
-    logger: P({
-      level: "silent"
-    }),
-
-    // Browser ثابت
-    browser: ["Ubuntu", "Chrome", "20.0.04"],
-
-    printQRInTerminal: false,
-
-    markOnlineOnConnect: false
+    logger,
+    browser: [
+      "SPOPO BOT",
+      "Chrome",
+      "1.0.0"
+    ],
+    markOnlineOnConnect: false,
+    syncFullHistory: false
   });
-
-  sock.ev.on("creds.update", saveCreds);
-
+  sock.ev.on(
+    "creds.update",
+    saveCreds
+  );
   // ===============================
-  // 🔑 Pairing Code
+  // 🔐 PAIRING CODE
   // ===============================
-
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
-
-    if (
-      connection === "connecting" &&
-      !state.creds.registered &&
-      !pairingRequested
-    ) {
-      pairingRequested = true;
-
-      try {
-        // نعطي وقت للاتصال قبل طلب الكود
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-
-        const code = await sock.requestPairingCode(
-          PHONE_NUMBER.replace(/\D/g, "")
+  if (!state.creds.registered) {
+    await delay(3000);
+    try {
+      const code =
+        await sock.requestPairingCode(
+          BOT_NUMBER
         );
-
-        console.log("");
-        console.log("====================================");
-        console.log("🤖 SPOPO BOT");
-        console.log("🔑 PAIRING CODE:");
-        console.log(code);
-        console.log("====================================");
-        console.log("");
-      } catch (error) {
-        console.log("❌ Pairing Code Error:");
-        console.log(error?.message || error);
-
-        pairingRequested = false;
-      }
-    }
-
-    if (connection === "open") {
       console.log("");
-      console.log("====================================");
-      console.log("✅ SPOPO BOT CONNECTED!");
-      console.log("🤖 البوت خدام دابا");
-      console.log("====================================");
+      console.log("================================");
+      console.log(" 🔐 SPOPO BOT PAIRING CODE");
+      console.log("================================");
       console.log("");
-    }
-
-    if (connection === "close") {
-      const statusCode =
-        lastDisconnect?.error?.output?.statusCode;
-
-      console.log("❌ الاتصال تسد");
-
-      if (statusCode === DisconnectReason.loggedOut) {
-        console.log("🚪 WhatsApp دار Logout.");
-        console.log("❌ خاصك تربط الحساب من جديد.");
-      } else {
-        console.log("🔄 إعادة الاتصال...");
-        pairingRequested = false;
-
-        setTimeout(() => {
-          startBot();
-        }, 5000);
-      }
-    }
-  });
-
-  // ===============================
-  // 👥 دخول وخروج الأعضاء
-  // ===============================
-
-  sock.ev.on("group-participants.update", async (update) => {
-    try {
-      const { id, participants, action } = update;
-
-      if (action === "add") {
-        for (const participant of participants) {
-          joinTimes.set(`${id}:${participant}`, Date.now());
-        }
-
-        const enabled = settings.get(`${id}:welcome`);
-
-        if (enabled !== false) {
-          for (const participant of participants) {
-            const number = jidNumber(participant);
-
-            await send(
-              sock,
-              id,
-              `👋 مرحبا بك @${number}\n\n🤖 مرحبا بك مع *SPOPO BOT* 🌟`,
-              [participant]
-            );
-          }
-        }
-      }
-
-      if (action === "remove") {
-        for (const participant of participants) {
-          joinTimes.delete(`${id}:${participant}`);
-        }
-      }
+      console.log(" CODE:", code);
+      console.log("");
+      console.log("WhatsApp > Settings");
+      console.log("> Linked Devices");
+      console.log("> Link a Device");
+      console.log("> Link with phone number");
+      console.log("");
+      console.log("================================");
     } catch (error) {
-      console.log("Welcome error:", error?.message || error);
+      console.log(
+        "❌ Pairing error:",
+        error.message
+      );
     }
-  });
-
+  }
   // ===============================
-  // 💬 الرسائل
+  // 🔌 CONNECTION
   // ===============================
-
-  sock.ev.on("messages.upsert", async ({ messages }) => {
-    try {
-      const msg = messages[0];
-
+  sock.ev.on(
+    "connection.update",
+    ({ connection, lastDisconnect }) => {
+      if (connection === "open") {
+        console.log("");
+        console.log("✅ SPOPO BOT CONNECTED");
+        console.log("🤖 Bot is online");
+        console.log("🛡️ Protection active");
+        console.log("");
+      }
+      if (connection === "close") {
+        const code =
+          lastDisconnect
+            ?.error
+            ?.output
+            ?.statusCode;
+        if (
+          code !==
+          DisconnectReason.loggedOut
+        ) {
+          console.log(
+            "🔄 Reconnecting..."
+          );
+          setTimeout(
+            startBot,
+            3000
+          );
+        } else {
+          console.log(
+            "❌ WhatsApp logged out."
+          );
+        }
+      }
+    }
+  );
+  // ===============================
+  // 💬 MESSAGES
+  // ===============================
+  sock.ev.on(
+    "messages.upsert",
+    async ({ messages }) => {
+      const msg = messages?.[0];
       if (!msg?.message) return;
-
-      if (msg.key.fromMe) return;
-
-      const jid = msg.key.remoteJid;
-
+      if (msg.key?.fromMe) return;
+      const jid =
+        msg.key.remoteJid;
       if (!jid) return;
-
-      const text = getText(msg.message);
-
-      if (!text) return;
-
       const sender =
         msg.key.participant ||
-        msg.key.remoteJid;
-
-      const isGroup = jid.endsWith("@g.us");
-
+        jid;
+      const text =
+        getText(msg);
       // ===============================
-      // 🛡️ Anti Spam
+      // 🛡️ GROUP PROTECTION
       // ===============================
-
-      if (isGroup) {
-        const spamKey = `${jid}:${sender}`;
-
-        const now = Date.now();
-
-        let data = spamData.get(spamKey);
-
-        if (!data) {
-          data = [];
-        }
-
-        data = data.filter((time) => now - time < 10000);
-
-        data.push(now);
-
-        spamData.set(spamKey, data);
-
-        const spamEnabled =
-          settings.get(`${jid}:antispam`) === true;
-
-        if (spamEnabled && data.length >= 6) {
-          const admin = await isGroupAdmin(
+      if (
+        jid.endsWith("@g.us") &&
+        text
+      ) {
+        const admin =
+          await isAdmin(
             sock,
             jid,
             sender
           );
-
-          if (!admin) {
-            await sock.sendMessage(jid, {
-              delete: msg.key
-            });
-
-            if (await botIsAdmin(sock, jid)) {
-              await sock.groupParticipantsUpdate(
+        // Admins محميين
+        if (!admin) {
+          // 🔗 Anti Link
+          if (
+            settings.antiLink &&
+            hasLink(text)
+          ) {
+            try {
+              await sock.sendMessage(
                 jid,
-                [sender],
-                "remove"
+                {
+                  delete: msg.key
+                }
               );
-            }
-
-            return;
-          }
-        }
-      }
-
-      // ===============================
-      // 🔗 Anti Link
-      // ===============================
-
-      if (isGroup && isLink(text)) {
-        const antiLinkEnabled =
-          settings.get(`${jid}:antilink`) === true;
-
-        if (antiLinkEnabled) {
-          const admin = await isGroupAdmin(
-            sock,
-            jid,
-            sender
-          );
-
-          if (!admin) {
-            await sock.sendMessage(jid, {
-              delete: msg.key
-            });
-
-            await send(
+            } catch {}
+            await warning(
               sock,
               jid,
-              "🚫 ممنوع إرسال الروابط هنا."
+              sender,
+              "🔗 إرسال رابط ممنوع"
             );
-
             return;
+          }
+          // 🤬 Anti Bad Words
+          if (
+            settings.antiBadWord &&
+            hasBadWord(text)
+          ) {
+            try {
+              await sock.sendMessage(
+                jid,
+                {
+                  delete: msg.key
+                }
+              );
+            } catch {}
+            await warning(
+              sock,
+              jid,
+              sender,
+              "🤬 كلمة ممنوعة"
+            );
+            return;
+          }
+          // 🚫 Anti Spam
+          if (settings.antiSpam) {
+            const key =
+              `${jid}:${sender}`;
+            const now =
+              Date.now();
+            let times =
+              spam.get(key) || [];
+            times =
+              times.filter(
+                t =>
+                  now - t <
+                  settings.spamTime
+              );
+            times.push(now);
+            spam.set(
+              key,
+              times
+            );
+            if (
+              times.length >=
+              settings.maxSpamMessages
+            ) {
+              spam.set(
+                key,
+                []
+              );
+              await warning(
+                sock,
+                jid,
+                sender,
+                "🚫 Spam"
+              );
+              return;
+            }
           }
         }
       }
-
       // ===============================
-      // 📋 MENU
+      // COMMANDS
       // ===============================
-
       if (
-        text.toLowerCase() === ".menu" ||
-        text.toLowerCase() === ".help"
-      ) {
-        await send(
-          sock,
+        !text.startsWith(PREFIX)
+      ) return;
+      const parts =
+        text
+          .slice(PREFIX.length)
+          .trim()
+          .split(/\s+/);
+      const command =
+        (parts.shift() || "")
+          .toLowerCase();
+      const args =
+        parts.join(" ");
+      // ===============================
+      // 🎌 MENU
+      // ===============================
+      if (command === "menu") {
+        await sock.sendMessage(
           jid,
-          `╭━━━〔 🤖 *SPOPO BOT* 〕━━━╮
-
-📋 *الأوامر العامة*
-
-.menu
-.hello
-.bot
-.ping
-.groupinfo
-.admins
-.info @عضو
-
-👥 *أوامر الأعضاء*
-
-.tagall
-.منشن
-.طرد @عضو
-.kick @عضو
-
-👑 *أوامر الإدارة*
-
-.ادمن @عضو
-.promote @عضو
-
-.نزع @عضو
-.demote @عضو
-
-🔗 *الحماية*
-
-.antilink on
-.antilink off
-
-.antispam on
-.antispam off
-
-👋 *الترحيب*
-
-.welcome on
-.welcome off
-
-🎨 *الصور*
-
-.sticker
-
-╰━━━━━━━━━━━━━━━━━━╯
-
-🤖 *SPOPO BOT*`
+          {
+            text: MENU
+          }
         );
-
         return;
       }
-
-      // ===============================
-      // ❤️ HELLO
-      // ===============================
-
-      if (
-        text.toLowerCase() === ".hello" ||
-        text.toLowerCase() === ".bot"
-      ) {
-        await send(
-          sock,
-          jid,
-          "👋 سلام!\n🤖 أنا *SPOPO BOT* 🤖"
-        );
-
-        return;
-      }
-
       // ===============================
       // 🏓 PING
       // ===============================
-
-      if (text.toLowerCase() === ".ping") {
-        await send(
-          sock,
+      if (command === "ping") {
+        await sock.sendMessage(
           jid,
-          "🏓 Pong!\n🤖 SPOPO BOT خدام مزيان."
-        );
-
-        return;
-      }
-
-      // ===============================
-      // ℹ️ GROUP INFO
-      // ===============================
-
-      if (
-        isGroup &&
-        text.toLowerCase() === ".groupinfo"
-      ) {
-        const metadata = await sock.groupMetadata(jid);
-
-        const admins = metadata.participants.filter(
-          (p) => p.admin
-        );
-
-        await send(
-          sock,
-          jid,
-          `📊 *معلومات المجموعة*
-
-👥 الاسم: ${metadata.subject}
-
-👤 عدد الأعضاء: ${metadata.participants.length}
-
-👑 عدد الأدمنية: ${admins.length}
-
-🆔 ${jid}`
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 👑 ADMINS
-      // ===============================
-
-      if (
-        isGroup &&
-        text.toLowerCase() === ".admins"
-      ) {
-        const metadata = await sock.groupMetadata(jid);
-
-        const admins = metadata.participants.filter(
-          (p) => p.admin
-        );
-
-        const mentions = admins.map((p) => p.id);
-
-        const list = admins
-          .map((p) => `👑 @${jidNumber(p.id)}`)
-          .join("\n");
-
-        await send(
-          sock,
-          jid,
-          `👑 *أدمنية المجموعة:*\n\n${list}`,
-          mentions
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 📢 TAG ALL
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase() === ".tagall" ||
-          text.toLowerCase() === ".منشن"
-        )
-      ) {
-        const metadata = await sock.groupMetadata(jid);
-
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ هاد الأمر غير للأدمنية."
-          );
-
-          return;
-        }
-
-        const mentions = metadata.participants.map(
-          (p) => p.id
-        );
-
-        const list = metadata.participants
-          .map((p) => `@${jidNumber(p.id)}`)
-          .join(" ");
-
-        await send(
-          sock,
-          jid,
-          `📢 *منشن لجميع الأعضاء*\n\n${list}`,
-          mentions
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 🚫 KICK
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase().startsWith(".طرد") ||
-          text.toLowerCase().startsWith(".kick")
-        )
-      ) {
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ خاصك تكون Admin."
-          );
-
-          return;
-        }
-
-        if (!(await botIsAdmin(sock, jid))) {
-          await send(
-            sock,
-            jid,
-            "❌ خاصني أنا حتى نكون Admin باش نقدر نطرد."
-          );
-
-          return;
-        }
-
-        const target = await getTarget(
-          msg,
-          text
-        );
-
-        if (!target) {
-          await send(
-            sock,
-            jid,
-            "⚠️ منشن العضو.\nمثال:\n.طرد @212XXXXXXXXX"
-          );
-
-          return;
-        }
-
-        await sock.groupParticipantsUpdate(
-          jid,
-          [target],
-          "remove"
-        );
-
-        await send(
-          sock,
-          jid,
-          `🚫 تم طرد @${jidNumber(target)}`,
-          [target]
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 👑 PROMOTE
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase().startsWith(".ادمن") ||
-          text.toLowerCase().startsWith(".promote")
-        )
-      ) {
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ هاد الأمر للأدمنية فقط."
-          );
-
-          return;
-        }
-
-        if (!(await botIsAdmin(sock, jid))) {
-          await send(
-            sock,
-            jid,
-            "❌ خاصني نكون Admin."
-          );
-
-          return;
-        }
-
-        const target = await getTarget(
-          msg,
-          text
-        );
-
-        if (!target) {
-          await send(
-            sock,
-            jid,
-            "⚠️ منشن العضو."
-          );
-
-          return;
-        }
-
-        await sock.groupParticipantsUpdate(
-          jid,
-          [target],
-          "promote"
-        );
-
-        await send(
-          sock,
-          jid,
-          `👑 @${jidNumber(target)} ولى Admin.`,
-          [target]
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 🔽 DEMOTE
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase().startsWith(".نزع") ||
-          text.toLowerCase().startsWith(".demote")
-        )
-      ) {
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ هاد الأمر للأدمنية فقط."
-          );
-
-          return;
-        }
-
-        if (!(await botIsAdmin(sock, jid))) {
-          await send(
-            sock,
-            jid,
-            "❌ خاصني نكون Admin."
-          );
-
-          return;
-        }
-
-        const target = await getTarget(
-          msg,
-          text
-        );
-
-        if (!target) {
-          await send(
-            sock,
-            jid,
-            "⚠️ منشن العضو."
-          );
-
-          return;
-        }
-
-        await sock.groupParticipantsUpdate(
-          jid,
-          [target],
-          "demote"
-        );
-
-        await send(
-          sock,
-          jid,
-          `🔽 @${jidNumber(target)} ما بقاش Admin.`,
-          [target]
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 🔗 ANTILINK ON/OFF
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase() === ".antilink on" ||
-          text.toLowerCase() === ".antilink off"
-        )
-      ) {
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ غير الأدمنية يقدرو يبدلو الحماية."
-          );
-
-          return;
-        }
-
-        const enabled =
-          text.toLowerCase() === ".antilink on";
-
-        settings.set(
-          `${jid}:antilink`,
-          enabled
-        );
-
-        await send(
-          sock,
-          jid,
-          enabled
-            ? "✅ Anti-Link تشعل."
-            : "❌ Anti-Link تطفات."
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 🛡️ ANTISPAM
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase() === ".antispam on" ||
-          text.toLowerCase() === ".antispam off"
-        )
-      ) {
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ غير الأدمنية."
-          );
-
-          return;
-        }
-
-        const enabled =
-          text.toLowerCase() === ".antispam on";
-
-        settings.set(
-          `${jid}:antispam`,
-          enabled
-        );
-
-        await send(
-          sock,
-          jid,
-          enabled
-            ? "✅ Anti-Spam تشعل."
-            : "❌ Anti-Spam تطفات."
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 👋 WELCOME
-      // ===============================
-
-      if (
-        isGroup &&
-        (
-          text.toLowerCase() === ".welcome on" ||
-          text.toLowerCase() === ".welcome off"
-        )
-      ) {
-        const admin = await isGroupAdmin(
-          sock,
-          jid,
-          sender
-        );
-
-        if (!admin) {
-          await send(
-            sock,
-            jid,
-            "❌ غير الأدمنية."
-          );
-
-          return;
-        }
-
-        const enabled =
-          text.toLowerCase() === ".welcome on";
-
-        settings.set(
-          `${jid}:welcome`,
-          enabled
-        );
-
-        await send(
-          sock,
-          jid,
-          enabled
-            ? "✅ الترحيب تشعل."
-            : "❌ الترحيب تطفا."
-        );
-
-        return;
-      }
-
-      // ===============================
-      // 👤 INFO
-      // ===============================
-
-      if (
-        isGroup &&
-        text.toLowerCase().startsWith(".info")
-      ) {
-        const target = await getTarget(
-          msg,
-          text
-        );
-
-        if (!target) {
-          await send(
-            sock,
-            jid,
-            "⚠️ منشن العضو.\nمثال:\n.info @212XXXXXXXXX"
-          );
-
-          return;
-        }
-
-        const metadata =
-          await sock.groupMetadata(jid);
-
-        const participant =
-          metadata.participants.find((p) =>
-            sameUser(p.id, target)
-          );
-
-        if (!participant) {
-          await send(
-            sock,
-            jid,
-            "❌ العضو ما لقيتوش."
-          );
-
-          return;
-        }
-
-        const joinKey =
-          `${jid}:${participant.id}`;
-
-        const joined =
-          joinTimes.get(joinKey);
-
-        let joinedText =
-          "غير معروف";
-
-        if (joined) {
-          joinedText =
-            new Date(joined).toLocaleString(
-              "fr-MA"
-            );
-        }
-
-        await send(
-          sock,
-          jid,
-          `👤 *معلومات العضو*
-
-📱 الرقم: @${jidNumber(participant.id)}
-
-👑 الرتبة: ${
-            participant.admin
-              ? "Admin"
-              : "عضو"
+          {
+            text:
+              "🏓 PONG!\n\n" +
+              "🤖 SPOPO BOT\n" +
+              "🟢 Online"
           }
-
-🕒 وقت الدخول: ${joinedText}`,
-          [participant.id]
         );
-
         return;
       }
-
       // ===============================
-      // 🎨 STICKER
+      // 🟢 ALIVE
       // ===============================
-
-      if (
-        isGroup &&
-        text.toLowerCase() === ".sticker"
-      ) {
-        const imageMessage =
-          msg.message?.imageMessage;
-
-        const quoted =
-          msg.message?.extendedTextMessage
-            ?.contextInfo
-            ?.quotedMessage;
-
-        let image =
-          imageMessage ||
-          quoted?.imageMessage;
-
-        if (!image) {
-          await send(
-            sock,
-            jid,
-            "📸 صيفط صورة وكتب فالكابشن:\n.sticker"
-          );
-
-          return;
-        }
-
-        try {
-          const stream =
-            await downloadContentFromMessage(
-              image,
-              "image"
-            );
-
-          const chunks = [];
-
-          for await (const chunk of stream) {
-            chunks.push(chunk);
+      if (command === "alive") {
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              "🤖 SPOPO BOT V2\n\n" +
+              "🟢 ONLINE\n" +
+              "🛡️ Protection: ON\n" +
+              "⚡ System: Active"
           }
-
-          const inputBuffer =
-            Buffer.concat(chunks);
-
-          const stickerBuffer =
-            await sharp(inputBuffer)
-              .resize(512, 512, {
-                fit: "inside",
-                withoutEnlargement: true
-              })
-              .webp({
-                quality: 80
-              })
-              .toBuffer();
-
+        );
+        return;
+      }
+      // ===============================
+      // 👑 OWNER
+      // ===============================
+      if (command === "owner") {
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              "╭━━〔 👑 OWNER 〕━━╮\n" +
+              "┃ SPOPO\n" +
+              "┃ 📱 0644140800\n" +
+              "╰━━━━━━━━━━━━━━╯"
+          }
+        );
+        return;
+      }
+      // ===============================
+      // ℹ️ INFO
+      // ===============================
+      if (command === "info") {
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              "🤖 SPOPO BOT V2\n\n" +
+              "🎌 Anime System\n" +
+              "🛡️ Anti-Link\n" +
+              "🚫 Anti-Spam\n" +
+              "🤬 Anti-Words\n" +
+              "👑 Admin System\n" +
+              "⚡ Baileys"
+          }
+        );
+        return;
+      }
+      // ===============================
+      // ⚙️ PROTECTION SETTINGS
+      // ===============================
+      if (
+        [
+          "antilink",
+          "antispam",
+          "badword"
+        ].includes(command)
+      ) {
+        if (
+          !jid.endsWith("@g.us")
+        ) {
           await sock.sendMessage(
             jid,
             {
-              sticker: stickerBuffer
+              text:
+                "⚠️ هاد الأمر خاص بالمجموعة."
             }
           );
-        } catch (error) {
-          console.log(
-            "Sticker error:",
-            error?.message || error
-          );
-
-          await send(
+          return;
+        }
+        if (
+          !await isAdmin(
             sock,
             jid,
-            "❌ ما قدرتش نصاوب Sticker لهاد الصورة."
+            sender
+          )
+        ) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "⛔ غير الأدمن يقدر يبدل الحماية."
+            }
           );
+          return;
         }
-
+        const value =
+          args.toLowerCase();
+        const enabled =
+          value === "on";
+        if (
+          command ===
+          "antilink"
+        )
+          settings.antiLink =
+            enabled;
+        if (
+          command ===
+          "antispam"
+        )
+          settings.antiSpam =
+            enabled;
+        if (
+          command ===
+          "badword"
+        )
+          settings.antiBadWord =
+            enabled;
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              `✅ ${command}\n` +
+              `الحالة: ${enabled ? "ON 🟢" : "OFF 🔴"}`
+          }
+        );
         return;
       }
-
-    } catch (error) {
-      console.log(
-        "Message Error:",
-        error?.message || error
-      );
+      // ===============================
+      // ⚠️ WARN
+      // ===============================
+      if (command === "warn") {
+        if (
+          !jid.endsWith("@g.us")
+        ) return;
+        if (
+          !await isAdmin(
+            sock,
+            jid,
+            sender
+          )
+        ) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "⛔ الأمر للأدمن فقط."
+            }
+          );
+          return;
+        }
+        const target =
+          getMention(msg);
+        if (!target) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "استعمل:\n.warn @user"
+            }
+          );
+          return;
+        }
+        await warning(
+          sock,
+          jid,
+          target,
+          "⚠️ تحذير من الأدمن"
+        );
+        return;
+      }
+      // ===============================
+      // 👋 GROUP ADMIN COMMANDS
+      // ===============================
+      if (
+        [
+          "kick",
+          "ban",
+          "promote",
+          "demote"
+        ].includes(command)
+      ) {
+        if (
+          !jid.endsWith("@g.us")
+        ) return;
+        if (
+          !await isAdmin(
+            sock,
+            jid,
+            sender
+          )
+        ) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "⛔ خاص بالأدمن."
+            }
+          );
+          return;
+        }
+        const target =
+          getMention(msg);
+        if (!target) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                `استعمل:\n.${command} @user`
+            }
+          );
+          return;
+        }
+        if (
+          !await isBotAdmin(
+            sock,
+            jid
+          )
+        ) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "❌ خاص البوت يكون Admin."
+            }
+          );
+          return;
+        }
+        let action =
+          command === "promote"
+            ? "promote"
+            : command === "demote"
+              ? "demote"
+              : "remove";
+        try {
+          await sock.groupParticipantsUpdate(
+            jid,
+            [target],
+            action
+          );
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                `✅ تم تنفيذ .${command} على @${target.split("@")[0]}`,
+              mentions: [target]
+            }
+          );
+        } catch {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "❌ ما قدرتش ننفذ الأمر."
+            }
+          );
+        }
+        return;
+      }
+      // ===============================
+      // 🎲 FUN
+      // ===============================
+      if (command === "rate") {
+        const n =
+          Math.floor(
+            Math.random() * 101
+          );
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              `🎯 النسبة ديالك: ${n}%`
+          }
+        );
+        return;
+      }
+      if (command === "love") {
+        const n =
+          Math.floor(
+            Math.random() * 101
+          );
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              `❤️ نسبة الحب: ${n}%`
+          }
+        );
+        return;
+      }
+      if (command === "ship") {
+        const target =
+          getMention(msg);
+        if (!target) {
+          await sock.sendMessage(
+            jid,
+            {
+              text:
+                "استعمل:\n.ship @user"
+            }
+          );
+          return;
+        }
+        const n =
+          Math.floor(
+            Math.random() * 101
+          );
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              `💘 @${sender.split("@")[0]} ❤️ @${target.split("@")[0]}\n\n` +
+              `💕 النسبة: ${n}%`,
+            mentions: [
+              sender,
+              target
+            ]
+          }
+        );
+        return;
+      }
+      // ===============================
+      // 🎌 ANIME
+      // ===============================
+      if (
+        command === "anime" ||
+        command === "waifu"
+      ) {
+        await sock.sendMessage(
+          jid,
+          {
+            text:
+              "🎌 Anime System\n\n" +
+              "🔥 هاد القسم واجد للتطوير.\n" +
+              "غادي نزيدو فيه صور/GIF ديال الأنمي فالمرحلة الجاية."
+          }
+        );
+        return;
+      }
     }
-  });
+  );
 }
-
-// ===============================
-// ▶️ START
-// ===============================
-
-startBot().catch((error) => {
-  console.error("❌ Bot Error:", error);
-});
+startBot().catch(
+  console.error
+);
