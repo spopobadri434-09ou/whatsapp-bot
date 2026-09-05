@@ -1,20 +1,13 @@
 {
   "name": "spopo-bot",
   "version": "2.0.0",
-  "description": "SPOPO BOT - WhatsApp QR Bot",
-  "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
-    "@hapi/boom": "^10.0.1",
-    "express": "^5.1.0",
-    "pino": "^9.9.0",
-    "qrcode": "^1.5.4"
+    "@whiskeysockets/baileys": "^6.7.18",
+    "express": "^4.21.2",
+    "pino": "^9.6.0"
   }
 }
