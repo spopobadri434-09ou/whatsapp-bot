@@ -9,7 +9,7 @@ import express from "express";
 const PREFIX = ".";
 const PORT = process.env.PORT || 3000;
 const BOT_NAME = "SPOPO BOT";
-const BOT_NUMBER = process.env.BOT_NUMBER;
+const BOT_NUMBER = 212644140080
 const SESSION_DIR =
   process.env.SESSION_DIR || "/app/auth_info_baileys";
 let sock = null;
