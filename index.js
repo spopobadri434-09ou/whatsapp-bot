@@ -22,7 +22,7 @@ async function startBot() {
 
     if (qr) {
       console.log("امسح رمز QR من واتساب:");
-      qrcode.generate(qr, { small: true });
+      qrcode.generate(qr, { small: false });
     }
 
     if (connection === "open") {
