@@ -1,242 +1,238 @@
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
-  Browsers,
-  fetchLatestBaileysVersion
+  Browsers
 } from "@whiskeysockets/baileys";
 
-import P from "pino";
 import { Boom } from "@hapi/boom";
+import pino from "pino";
+import express from "express";
 import fs from "fs";
+import path from "path";
 
-// ╔══════════════════════════════════════╗
-// ║          🤖 SPOPO BOT V2            ║
-// ╚══════════════════════════════════════╝
+/*
+====================================================
+                 SPOPO BOT
+          Railway + Pairing Code
+====================================================
+*/
 
-const BOT_NUMBER = "212644140800";
 const PREFIX = ".";
+const PORT = process.env.PORT || 3000;
 
-const AUTH_FOLDER = "./auth_info";
+/*
+ * Railway Volume:
+ * Mount Path = /app
+ *
+ * لذلك Session غادي تكون:
+ * /app/auth_info_baileys
+ */
+const SESSION_DIR =
+  process.env.SESSION_DIR || "/app/auth_info_baileys";
 
+/*
+ * رقم WhatsApp ديال البوت
+ *
+ * حط الرقم ديالك هنا بلا +
+ * مثال المغرب:
+ * 2126XXXXXXXX
+ */
+const BOT_NUMBER =
+  process.env.BOT_NUMBER || "212644140800";
+
+/*
+====================================================
+                 EXPRESS SERVER
+====================================================
+*/
+
+const app = express();
+
+app.get("/", (req, res) => {
+  res.json({
+    bot: "SPOPO BOT",
+    status: "online",
+    whatsapp: "connecting",
+    time: new Date().toISOString()
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    bot: "SPOPO BOT",
+    uptime: process.uptime()
+  });
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🌐 SPOPO BOT Web Server: ${PORT}`);
+});
+
+/*
+====================================================
+              CREATE SESSION DIRECTORY
+====================================================
+*/
+
+if (!fs.existsSync(SESSION_DIR)) {
+  fs.mkdirSync(SESSION_DIR, {
+    recursive: true
+  });
+}
+
+/*
+====================================================
+                  BOT STATUS
+====================================================
+*/
+
+let sock = null;
 let reconnecting = false;
-let pairingRequested = false;
+let pairingShown = false;
 
-// ──────────────────────────────────────
-// تنظيف رقم الهاتف
-// ──────────────────────────────────────
-function cleanPhoneNumber(number) {
-  return String(number).replace(/[^0-9]/g, "");
-}
+/*
+====================================================
+                 CONNECT WHATSAPP
+====================================================
+*/
 
-// ──────────────────────────────────────
-// حذف Session قديمة
-// ──────────────────────────────────────
-function deleteAuth() {
-  try {
-    if (fs.existsSync(AUTH_FOLDER)) {
-      fs.rmSync(AUTH_FOLDER, {
-        recursive: true,
-        force: true
-      });
-
-      console.log("🗑️ تم حذف Session القديمة.");
-    }
-  } catch (error) {
-    console.log("⚠️ تعذر حذف Session القديمة.");
-  }
-}
-
-// ──────────────────────────────────────
-// Pairing Code منظم
-// ──────────────────────────────────────
-function showPairingCode(code) {
-  const cleanCode = String(code)
-    .replace(/[^A-Z0-9]/gi, "")
-    .toUpperCase();
-
-  const formatted =
-    cleanCode.length === 8
-      ? `${cleanCode.slice(0, 4)}-${cleanCode.slice(4)}`
-      : cleanCode;
-
-  console.log("");
-  console.log("╔══════════════════════════════════════╗");
-  console.log("║          🔐 SPOPO BOT               ║");
-  console.log("╠══════════════════════════════════════╣");
-  console.log("║                                      ║");
-  console.log(`║          ${formatted.padEnd(20)}║`);
-  console.log("║                                      ║");
-  console.log("╠══════════════════════════════════════╣");
-  console.log("║ WhatsApp → الإعدادات                 ║");
-  console.log("║ → الأجهزة المرتبطة                   ║");
-  console.log("║ → ربط جهاز                           ║");
-  console.log("║ → الربط باستخدام رقم الهاتف          ║");
-  console.log("╚══════════════════════════════════════╝");
-  console.log("");
-}
-
-// ──────────────────────────────────────
-// تشغيل البوت
-// ──────────────────────────────────────
 async function startBot() {
+  if (reconnecting) {
+    return;
+  }
+
+  reconnecting = true;
+
   try {
     console.log("");
-    console.log("╔══════════════════════════════════════╗");
-    console.log("║          🤖 SPOPO BOT V2            ║");
-    console.log("╚══════════════════════════════════════╝");
+    console.log("╔════════════════════════════════════╗");
+    console.log("║          🤖 SPOPO BOT              ║");
+    console.log("║       WhatsApp Connection          ║");
+    console.log("╚════════════════════════════════════╝");
     console.log("");
 
-    const { state, saveCreds } =
-      await useMultiFileAuthState(AUTH_FOLDER);
+    console.log("📁 Session:");
+    console.log(SESSION_DIR);
 
-    const { version } =
-      await fetchLatestBaileysVersion();
+    /*
+     * تحميل Session
+     */
+    const {
+      state,
+      saveCreds
+    } = await useMultiFileAuthState(SESSION_DIR);
 
-    const sock = makeWASocket({
+    /*
+     * إنشاء Socket
+     */
+    sock = makeWASocket({
       auth: state,
 
-      version,
-
-      printQRInTerminal: false,
-
-      browser: Browsers.ubuntu("SPOPO BOT"),
-
-      logger: P({
+      logger: pino({
         level: "silent"
       }),
 
-      markOnlineOnConnect: false,
+      browser: Browsers.ubuntu("Chrome"),
+
+      printQRInTerminal: false,
 
       connectTimeoutMs: 60000,
 
       defaultQueryTimeoutMs: 60000,
 
-      syncFullHistory: false
+      keepAliveIntervalMs: 25000,
+
+      markOnlineOnConnect: false
     });
 
-    // حفظ بيانات الحساب
+    /*
+     * حفظ Credentials
+     */
     sock.ev.on(
       "creds.update",
       saveCreds
     );
 
-    // ─────────────────────────────────
-    // حالة الاتصال
-    // ─────────────────────────────────
+    /*
+====================================================
+              CONNECTION UPDATE
+====================================================
+    */
+
     sock.ev.on(
       "connection.update",
       async (update) => {
+
         const {
           connection,
           lastDisconnect
         } = update;
 
-        // جاري الاتصال
+        /*
+        ---------------------------------------------
+                    CONNECTING
+        ---------------------------------------------
+        */
+
         if (connection === "connecting") {
           console.log(
             "⏳ جاري الاتصال بـ WhatsApp..."
           );
         }
 
-        // ─────────────────────────────
-        // Pairing Code
-        // ─────────────────────────────
-        if (
-          connection === "connecting" &&
-          !state.creds.registered &&
-          !pairingRequested
-        ) {
-          pairingRequested = true;
+        /*
+        ---------------------------------------------
+                    CONNECTED
+        ---------------------------------------------
+        */
 
-          try {
-            const phone =
-              cleanPhoneNumber(BOT_NUMBER);
-
-            console.log("");
-            console.log(
-              "📱 رقم الهاتف:",
-              phone
-            );
-            console.log(
-              "🔐 جاري إنشاء Pairing Code..."
-            );
-
-            // نعطي الاتصال شوية وقت باش يكون جاهز
-            await new Promise(
-              resolve => setTimeout(resolve, 3000)
-            );
-
-            const code =
-              await sock.requestPairingCode(
-                phone
-              );
-
-            showPairingCode(code);
-
-          } catch (error) {
-
-            pairingRequested = false;
-
-            console.log("");
-            console.log(
-              "╔══════════════════════════════════════╗"
-            );
-            console.log(
-              "║       ❌ فشل Pairing Code            ║"
-            );
-            console.log(
-              "╚══════════════════════════════════════╝"
-            );
-
-            console.log(
-              "السبب:",
-              error?.message || error
-            );
-
-            console.log("");
-          }
-        }
-
-        // ─────────────────────────────
-        // متصل
-        // ─────────────────────────────
         if (connection === "open") {
 
           reconnecting = false;
-          pairingRequested = true;
+          pairingShown = false;
 
           console.log("");
-          console.log(
-            "╔══════════════════════════════════════╗"
-          );
-          console.log(
-            "║      ✅ SPOPO BOT ONLINE             ║"
-          );
-          console.log(
-            "╠══════════════════════════════════════╣"
-          );
-          console.log(
-            "║      WhatsApp Connected 🟢           ║"
-          );
-          console.log(
-            "╚══════════════════════════════════════╝"
-          );
+          console.log("╔════════════════════════════════════╗");
+          console.log("║       ✅ WHATSAPP CONNECTED        ║");
+          console.log("║          🤖 SPOPO BOT             ║");
+          console.log("╚════════════════════════════════════╝");
           console.log("");
+
+          try {
+            await sock.sendMessage(
+              `${BOT_NUMBER}@s.whatsapp.net`,
+              {
+                text:
+                  "🤖 *SPOPO BOT*\n\n" +
+                  "✅ تم الاتصال بنجاح بـ WhatsApp\n" +
+                  "🚀 البوت خدام دابا."
+              }
+            );
+          } catch (e) {
+            console.log(
+              "ℹ️ ما قدرناش نرسل رسالة البداية."
+            );
+          }
         }
 
-        // ─────────────────────────────
-        // انقطع الاتصال
-        // ─────────────────────────────
+        /*
+        ---------------------------------------------
+                    CONNECTION CLOSED
+        ---------------------------------------------
+        */
+
         if (connection === "close") {
 
+          reconnecting = false;
+
           const statusCode =
-            new Boom(
-              lastDisconnect?.error
-            )?.output?.statusCode;
+            new Boom(lastDisconnect?.error)
+              ?.output?.statusCode;
 
           console.log("");
           console.log(
-            "❌ اتصال WhatsApp انقطع"
+            "❌ WhatsApp Connection Closed"
           );
 
           console.log(
@@ -244,231 +240,197 @@ async function startBot() {
             statusCode
           );
 
-          // تسجيل خروج نهائي
+          /*
+          ============================================
+                    401 = LOGGED OUT
+          ============================================
+          */
+
           if (
             statusCode ===
             DisconnectReason.loggedOut
           ) {
 
+            console.log("");
             console.log(
-              "🚪 الحساب خرج من WhatsApp."
+              "🚪 WhatsApp خرج الحساب من الجهاز."
             );
 
             console.log(
-              "🗑️ حذف Session..."
+              "⚠️ Session الحالية ما بقاتش صالحة."
             );
-
-            deleteAuth();
-
-            pairingRequested = false;
 
             console.log(
-              "🔄 أعد تشغيل الخدمة للحصول على كود جديد."
+              "🔗 خاصك Pairing Code جديد."
             );
+
+            console.log("");
+
+            /*
+             * مهم:
+             * ما نحذفوش Session هنا
+             * وما نديروش reconnect loop.
+             */
+
+            process.exit(0);
+          }
+
+          /*
+          ============================================
+                   RESTART REQUIRED
+          ============================================
+          */
+
+          if (
+            statusCode ===
+            DisconnectReason.restartRequired
+          ) {
+
+            console.log(
+              "🔄 WhatsApp طلب Restart..."
+            );
+
+            setTimeout(() => {
+              startBot();
+            }, 3000);
 
             return;
           }
 
-          // Session غير صالحة
-          if (statusCode === 401) {
-
-            console.log(
-              "⚠️ Session غير صالحة (401)."
-            );
-
-            deleteAuth();
-
-            pairingRequested = false;
-          }
-
-          // إعادة الاتصال
-          if (!reconnecting) {
-
-            reconnecting = true;
-
-            console.log(
-              "🔄 إعادة الاتصال خلال 5 ثواني..."
-            );
-
-            setTimeout(() => {
-
-              reconnecting = false;
-
-              startBot();
-
-            }, 5000);
-          }
-        }
-      }
-    );
-
-    // ─────────────────────────────────
-    // استقبال الرسائل
-    // ─────────────────────────────────
-    sock.ev.on(
-      "messages.upsert",
-      async ({ messages }) => {
-
-        try {
-
-          for (const msg of messages) {
-
-            if (!msg?.message)
-              continue;
-
-            if (msg.key.fromMe)
-              continue;
-
-            const jid =
-              msg.key.remoteJid;
-
-            if (!jid)
-              continue;
-
-            const text =
-              msg.message.conversation ||
-              msg.message.extendedTextMessage?.text ||
-              "";
-
-            if (!text)
-              continue;
-
-            const command =
-              text.trim().toLowerCase();
-
-            console.log(
-              `📩 Message: ${text}`
-            );
-
-            // ─────────────────────────
-            // .ping
-            // ─────────────────────────
-            if (
-              command === `${PREFIX}ping`
-            ) {
-
-              await sock.sendMessage(
-                jid,
-                {
-                  text:
-`╭━━━〔 🏓 PONG 〕━━━╮
-
-┃ 🤖 SPOPO BOT
-┃ 🟢 Online
-┃ ⚡ الخدمة خدامة مزيان
-
-╰━━━━━━━━━━━━━━━━╯`
-                }
-              );
-            }
-
-            // ─────────────────────────
-            // .menu
-            // ─────────────────────────
-            else if (
-              command === `${PREFIX}menu`
-            ) {
-
-              await sock.sendMessage(
-                jid,
-                {
-                  text:
-`╭━━━〔 🤖 SPOPO BOT 〕━━━╮
-
-┃ 📌 الأوامر المتاحة:
-┃
-┃ 🏓 .ping
-┃ 📋 .menu
-┃ 🤖 .bot
-┃ 👑 .owner
-┃ 🧪 .test
-┃
-╰━━━━━━━━━━━━━━━━━━━━╯`
-                }
-              );
-            }
-
-            // ─────────────────────────
-            // .bot
-            // ─────────────────────────
-            else if (
-              command === `${PREFIX}bot`
-            ) {
-
-              await sock.sendMessage(
-                jid,
-                {
-                  text:
-`╭━━━〔 🤖 BOT INFO 〕━━━╮
-
-┃ الاسم: SPOPO BOT
-┃ الإصدار: V2
-┃ الحالة: 🟢 Online
-┃ النظام: WhatsApp
-┃
-╰━━━━━━━━━━━━━━━━━━━━╯`
-                }
-              );
-            }
-
-            // ─────────────────────────
-            // .owner
-            // ─────────────────────────
-            else if (
-              command === `${PREFIX}owner`
-            ) {
-
-              await sock.sendMessage(
-                jid,
-                {
-                  text:
-`╭━━━〔 👑 OWNER 〕━━━╮
-
-┃ الاسم: SPOPO
-┃ 🤖 SPOPO BOT V2
-┃
-╰━━━━━━━━━━━━━━━━━━╯`
-                }
-              );
-            }
-
-            // ─────────────────────────
-            // .test
-            // ─────────────────────────
-            else if (
-              command === `${PREFIX}test`
-            ) {
-
-              await sock.sendMessage(
-                jid,
-                {
-                  text:
-`╭━━━〔 🧪 TEST 〕━━━╮
-
-┃ ✅ Message system: OK
-┃ ✅ WhatsApp: OK
-┃ ✅ Bot: OK
-┃
-┃ 🤖 SPOPO BOT خدام
-
-╰━━━━━━━━━━━━━━━━━╯`
-                }
-              );
-            }
-          }
-
-        } catch (error) {
+          /*
+          ============================================
+                   TEMPORARY CONNECTION ERROR
+          ============================================
+          */
 
           console.log(
-            "❌ Message Error:",
-            error?.message || error
+            "🔄 إعادة الاتصال بعد 5 ثواني..."
           );
 
+          setTimeout(() => {
+            startBot();
+          }, 5000);
         }
       }
     );
 
+    /*
+====================================================
+                  PAIRING CODE
+====================================================
+    */
+
+    /*
+     * إذا Session مازال ما تسجلتش
+     * نطلب Pairing Code
+     */
+
+    if (!state.creds.registered) {
+
+      /*
+       * نخلي socket يعطي الوقت باش يتصل
+       */
+      await new Promise(
+        resolve => setTimeout(resolve, 5000)
+      );
+
+      /*
+       * التأكد أن الرقم صحيح
+       */
+
+      const phoneNumber =
+        BOT_NUMBER
+          .replace(/\D/g, "");
+
+      if (!phoneNumber) {
+        throw new Error(
+          "BOT_NUMBER غير صحيح."
+        );
+      }
+
+      try {
+
+        const code =
+          await sock.requestPairingCode(
+            phoneNumber
+          );
+
+        if (!pairingShown) {
+
+          pairingShown = true;
+
+          console.log("");
+          console.log(
+            "╔════════════════════════════════════╗"
+          );
+
+          console.log(
+            "║       🔐 SPOPO PAIRING CODE       ║"
+          );
+
+          console.log(
+            "╠════════════════════════════════════╣"
+          );
+
+          console.log(
+            `║            ${code}              ║`
+          );
+
+          console.log(
+            "╚════════════════════════════════════╝"
+          );
+
+          console.log("");
+
+          console.log(
+            "📱 WhatsApp:"
+          );
+
+          console.log(
+            "Settings → Linked Devices"
+          );
+
+          console.log(
+            "→ Link a Device"
+          );
+
+          console.log(
+            "→ Link with phone number instead"
+          );
+
+          console.log(
+            `→ دخل الكود: ${code}`
+          );
+
+          console.log("");
+        }
+
+      } catch (error) {
+
+        console.log("");
+        console.log(
+          "❌ فشل إنشاء Pairing Code"
+        );
+
+        console.log(
+          error?.message || error
+        );
+
+        console.log("");
+
+        /*
+         * ما نحذفوش Session
+         */
+
+        setTimeout(() => {
+          startBot();
+        }, 10000);
+      }
+    }
+
   } catch (error) {
+
+    reconnecting = false;
 
     console.log("");
     console.log(
@@ -480,8 +442,309 @@ async function startBot() {
     );
 
     console.log("");
+
+    setTimeout(() => {
+      startBot();
+    }, 10000);
   }
 }
 
-// تشغيل
-startBot();
+/*
+====================================================
+                    COMMANDS
+====================================================
+*/
+
+async function handleCommand(
+  message,
+  jid,
+  sender
+) {
+
+  const text =
+    message?.conversation ||
+    message?.extendedTextMessage?.text ||
+    "";
+
+  if (!text.startsWith(PREFIX)) {
+    return;
+  }
+
+  const args =
+    text.trim().split(/\s+/);
+
+  const command =
+    args[0]
+      .slice(PREFIX.length)
+      .toLowerCase();
+
+  /*
+  ================================================
+                    MENU
+  ================================================
+  */
+
+  if (command === "menu") {
+
+    const menu =
+`╭━━━〔 🤖 SPOPO BOT 〕━━━╮
+┃
+┃ 👋 مرحبا بك
+┃
+┃ 📌 الأوامر:
+┃
+┃ .menu
+┃ .ping
+┃ .alive
+┃ .info
+┃ .owner
+┃ .time
+┃ .group
+┃ .tagall
+┃ .rules
+┃
+╰━━━━━━━━━━━━━━━━━━━━━━╯`;
+
+    await sock.sendMessage(
+      jid,
+      {
+        text: menu
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                    PING
+  ================================================
+  */
+
+  if (command === "ping") {
+
+    await sock.sendMessage(
+      jid,
+      {
+        text: "🏓 Pong!\n⚡ SPOPO BOT خدام."
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                    ALIVE
+  ================================================
+  */
+
+  if (command === "alive") {
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          "🤖 *SPOPO BOT*\n\n" +
+          "🟢 Online\n" +
+          "⚡ Ready\n" +
+          "🚀 Railway"
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                    INFO
+  ================================================
+  */
+
+  if (command === "info") {
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          "🤖 *SPOPO BOT*\n\n" +
+          "Version: 1.0.0\n" +
+          "Platform: Railway\n" +
+          "Auth: Pairing Code\n" +
+          "Status: Online"
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                    OWNER
+  ================================================
+  */
+
+  if (command === "owner") {
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          "👑 Owner: SPOPO\n" +
+          "🤖 Bot: SPOPO BOT"
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                    TIME
+  ================================================
+  */
+
+  if (command === "time") {
+
+    const now =
+      new Date().toLocaleString(
+        "fr-MA",
+        {
+          timeZone:
+            "Africa/Casablanca"
+        }
+      );
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          `🕐 الوقت دابا:\n${now}`
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                    RULES
+  ================================================
+  */
+
+  if (command === "rules") {
+
+    await sock.sendMessage(
+      jid,
+      {
+        text:
+          "📜 *قوانين المجموعة*\n\n" +
+          "1️⃣ الاحترام\n" +
+          "2️⃣ ممنوع السبام\n" +
+          "3️⃣ ممنوع الإزعاج\n" +
+          "4️⃣ اتبع قوانين المجموعة"
+      }
+    );
+
+    return;
+  }
+
+  /*
+  ================================================
+                  UNKNOWN
+  ================================================
+  */
+
+  await sock.sendMessage(
+    jid,
+    {
+      text:
+        `❌ الأمر *${command}* ما كاينش.\n\n` +
+        `اكتب ${PREFIX}menu`
+    }
+  );
+}
+
+/*
+====================================================
+                 MESSAGE HANDLER
+====================================================
+*/
+
+function setupMessages() {
+
+  sock.ev.on(
+    "messages.upsert",
+    async ({
+      messages,
+      type
+    }) => {
+
+      if (type !== "notify") {
+        return;
+      }
+
+      for (const msg of messages) {
+
+        try {
+
+          if (!msg.message) {
+            continue;
+          }
+
+          if (msg.key.fromMe) {
+            continue;
+          }
+
+          const jid =
+            msg.key.remoteJid;
+
+          if (!jid) {
+            continue;
+          }
+
+          const message =
+            msg.message;
+
+          const sender =
+            msg.key.participant ||
+            jid;
+
+          await handleCommand(
+            message,
+            jid,
+            sender
+          );
+
+        } catch (error) {
+
+          console.log(
+            "❌ Message Error:",
+            error?.message || error
+          );
+
+        }
+      }
+    }
+  );
+}
+
+/*
+====================================================
+                  START BOT
+====================================================
+*/
+
+(async () => {
+
+  await startBot();
+
+  /*
+   * Messages listener خاصو يتربط
+   * مع socket الحالي.
+   */
+  if (sock) {
+    setupMessages();
+  }
+
+})();
