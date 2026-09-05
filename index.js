@@ -16,21 +16,32 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  if (!state.creds.registered) {
-    const phoneNumber = "212644140800";
+  const phoneNumber = "212644140800";
+  let pairingRequested = false;
 
-    const code = await sock.requestPairingCode(phoneNumber);
-
-    console.log("================================");
-    console.log("🔑 Pairing Code:", code);
-    console.log("================================");
-  }
-
-  sock.ev.on("connection.update", (update) => {
+  sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
 
-    if (connection === "connecting") {
-      console.log("⏳ جاري الاتصال بواتساب...");
+    if (
+      connection === "connecting" &&
+      !state.creds.registered &&
+      !pairingRequested
+    ) {
+      pairingRequested = true;
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        const code = await sock.requestPairingCode(phoneNumber);
+
+        console.log("================================");
+        console.log("🔑 Pairing Code:", code);
+        console.log("================================");
+      } catch (error) {
+        pairingRequested = false;
+        console.log("❌ خطأ في Pairing Code:");
+        console.log(error);
+      }
     }
 
     if (connection === "open") {
